@@ -8,50 +8,42 @@ Lucene, Solr or Elasticsearch
 @author: Xiaozhou Wang
 """
 
-from collections import defaultdict
-from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
+import numpy as np
 
 class fts_inmem:
- 
-    def __init__(self,max_df=0.05):
-        self.inverted_index = defaultdict(list)
-        self.__unique_id = 0
-        self.vectorizer = CountVectorizer(max_df=max_df,min_df=0)
-        self.transformer = TfidfTransformer(smooth_idf=False)
- 
-    def lookup(self, document):
-        tokens=[word for word in self.analyze(document) if word not  in self.vectorizer.stop_words_]
-        token_ids=[self.vectorizer.vocabulary_.get(token) for token in tokens]
-        all_docs=[self.inverted_index.get(token_id) for token_id in token_ids]
-        uniq_docs=list(set([doc for l in all_docs if l is not None for doc in l]))
+     
+    def __init__(self,*args,**kwargs):
+        self.vectorizer = TfidfVectorizer(*args,**kwargs)
+        
+    def create_index(self, documents, column='data'):
+        self.column=column
+        if isinstance(documents, list) or isinstance(documents,pd.core.series.Series):
+            self.documents=pd.DataFrame(documents,columns=[column])
+        else:
+            self.documents=documents
+        self.tfidf= self.vectorizer.fit_transform(self.documents[self.column])
+        
+    def _lookup(self, query):
+        doc_vec=self.vectorizer.transform(query)
+        terms_tfidf=self.tfidf[:,np.sum(doc_vec.toarray(),axis=0)>0] #Keep only columns of sparse matrix in query
+        rows, _ = terms_tfidf.nonzero() 
+        uniq_docs=list(set(rows))
+        filter_df=self.documents.loc[uniq_docs,:]
         if len(uniq_docs)>0:
-            query_doc=self.vectorizer.transform([document])
             raw_res=self.tfidf[uniq_docs]
-            res=list(zip(uniq_docs,list(cosine_similarity(query_doc,raw_res)[0])))
-            res_srt=sorted(res, key=lambda tup: tup[1],reverse=True)
-        elif len(uniq_docs)==0:
-            res_srt=[]
-        return res_srt
+            filter_df['match']=cosine_similarity(doc_vec,raw_res)[0]
+            filter_df.sort_values('match',inplace=True,ascending=False)
+        return filter_df
     
-    def create_index(self, documents):
-        self.bow = self.vectorizer.fit_transform(documents)
-        self.tfidf=self.transformer.fit_transform(self.bow)
-        self.analyze = self.vectorizer.build_analyzer()
-        self.inverted_index = defaultdict(list)
-        self._create_inverted(documents)
-    
-    def _create_inverted(self, documents):
-        for document in documents:
-            tokens=[word for word in self.analyze(document) if word not  in self.vectorizer.stop_words_]
-            for token in tokens:
-                token_id=self.vectorizer.vocabulary_.get(token)
-                if self.__unique_id not in self.inverted_index[token_id]:
-                    self.inverted_index[token_id].append(self.__unique_id)
-            self.__unique_id += 1
+    def query(self, query):
+        res=self._lookup(query)
+        return res
 
 if __name__ == "__main__":
-    index = fts_inmem(max_df=0.10)
+    index = fts_inmem(max_df=0.90)
     data=[
         'fairview park,no. 36,fairview park 9th street river  north,yuen long,new territories',
         'fairview park,no. 36,fairview park river north 9th street,yuen long,new territories',
@@ -70,5 +62,11 @@ if __name__ == "__main__":
         'no. 5,canal road east,wan chai,hong kong'
     ]
     index.create_index(data)
-    returned=index.lookup('sing')
-    print(data[2])
+    returned=index.query(['north','fairview','kowloon'])
+    print(returned)
+    df=pd.DataFrame(data,columns=['My Text'])
+    df=pd.concat([df,pd.DataFrame(np.random.random((15, 3)),columns=['Col 1','Col 2','Col 3'])]
+            ,axis=1)
+    index.create_index(df,column='My Text')
+    returned=index.query(['north','fairview','kowloon'])
+    print(returned)
